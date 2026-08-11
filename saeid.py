@@ -17,7 +17,7 @@ n_candles = 150
 tf_input = "30m"
 search_interval = "1d"
 
-# تنظیمات تلگرام (بدون تغییر)
+# تنظیمات تلگرام
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -143,7 +143,6 @@ for crypto_symbol in crypto_symbols:
     print(f"شروع تحلیل برای نماد الگو: {crypto_symbol}")
     print(f"{'='*80}")
 
-    # تنظیم بازه دانلود (همانند قبل)
     if tf_input == "4h":
         download_interval = "1h"
         resample_rule = "4h"
@@ -175,19 +174,22 @@ for crypto_symbol in crypto_symbols:
     if resample_rule:
         close_series = close_series.resample(resample_rule).last().dropna()
 
-    if len(close_series) < n_candles:
-        print(f"  تعداد کندل‌ها ({len(close_series)}) کمتر از {n_candles} است. رد می‌شود.")
-        continue
-
-    # ================================
-    # محاسبه باند بولینگر (جایگزین MACD/SMA)
-    # ================================
+    # محاسبه باند بولینگر و حذف NaNهای اولیه
     bb_period = 20
     bb_std = 2
     bb_mid = close_series.rolling(bb_period).mean()
     bb_std_val = close_series.rolling(bb_period).std()
     bb_upper = bb_mid + bb_std * bb_std_val
     bb_lower = bb_mid - bb_std * bb_std_val
+
+    # حذف NaN و هم‌تراز کردن
+    bb_mid = bb_mid.dropna()
+    bb_upper = bb_upper.reindex(bb_mid.index)
+    bb_lower = bb_lower.reindex(bb_mid.index)
+
+    if len(bb_mid) < n_candles:
+        print(f"  تعداد کندل‌های معتبر باند بولینگر ({len(bb_mid)}) کمتر از {n_candles} است. رد می‌شود.")
+        continue
 
     # استخراج الگو (سه خط)
     pattern_upper = bb_upper.iloc[-n_candles:].values
@@ -196,7 +198,6 @@ for crypto_symbol in crypto_symbols:
     pattern_dates = bb_upper.index[-n_candles:]
     pattern_start_date = pattern_dates[0].normalize().tz_localize(None)
 
-    # نرمال‌سازی
     pattern_norm_upper = z_norm(pattern_upper)
     pattern_norm_mid   = z_norm(pattern_mid)
     pattern_norm_lower = z_norm(pattern_lower)
@@ -204,7 +205,7 @@ for crypto_symbol in crypto_symbols:
     print(f"الگوی {crypto_symbol} ({tf_input}) با {n_candles} کندل استخراج شد.")
     print(f"بازه الگو: {pattern_dates[0]} تا {pattern_dates[-1]}")
 
-    # تابع جستجوی تطابق‌ها با سه خط بولینگر
+    # تابع جستجو (با حذف NaN)
     def search_raw_matches(symbol, interval="1d", window_fraction=0.5):
         df = yf.download(symbol, interval=interval, period="max")
         if df.empty:
@@ -219,16 +220,14 @@ for crypto_symbol in crypto_symbols:
             return None, []
 
         close = df['Close'].dropna()
-        if len(close) < n_candles:
+        if len(close) < bb_period + n_candles:   # حداقل داده برای محاسبه باند و n_candles
             return None, []
 
-        # باند بولینگر برای نماد جستجو
         mid = close.rolling(bb_period).mean()
         std = close.rolling(bb_period).std()
         upper = mid + bb_std * std
         lower = mid - bb_std * std
 
-        # حذف NaNهای ابتدایی
         mid = mid.dropna()
         upper = upper.reindex(mid.index)
         lower = lower.reindex(mid.index)
@@ -253,12 +252,10 @@ for crypto_symbol in crypto_symbols:
             win_mid   = mid_vals[i:i + n_candles]
             win_lower = lower_vals[i:i + n_candles]
 
-            # نرمال‌سازی هر پنجره
             win_upper_norm = z_norm(win_upper)
             win_mid_norm   = z_norm(win_mid)
             win_lower_norm = z_norm(win_lower)
 
-            # فاصله‌های DTW و Euclidean برای سه خط
             dtw_up = dtw(pattern_norm_upper, win_upper_norm,
                          keep_internals=False,
                          window_type='sakoechiba',
@@ -282,7 +279,7 @@ for crypto_symbol in crypto_symbols:
 
         return mid, raw_matches
 
-    all_mid_series = {}  # برای نمودارها
+    all_mid_series = {}
     global_raw_matches = []
 
     for sym in symbols_to_search:
@@ -290,24 +287,19 @@ for crypto_symbol in crypto_symbols:
         all_mid_series[sym] = mid_series
         if raw_list:
             for item in raw_list:
-                dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low, start_date, w_up, w_mid, w_low = item
-                global_raw_matches.append((sym, dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low, start_date, w_up, w_mid, w_low))
+                global_raw_matches.append((sym,) + item)
 
     if not global_raw_matches:
         print("هیچ تطابقی برای این الگو یافت نشد. به نماد بعدی می‌رویم.")
         continue
 
-    # ================================
-    # نرمال‌سازی فاصله‌ها و امتیازدهی
-    # ================================
-    dtw_up_all = np.array([m[1] for m in global_raw_matches])
-    euc_up_all = np.array([m[2] for m in global_raw_matches])
-    dtw_mid_all = np.array([m[3] for m in global_raw_matches])
-    euc_mid_all = np.array([m[4] for m in global_raw_matches])
-    dtw_low_all = np.array([m[5] for m in global_raw_matches])
-    euc_low_all = np.array([m[6] for m in global_raw_matches])
+    dtw_up_all = np.array([m[2] for m in global_raw_matches])
+    euc_up_all = np.array([m[3] for m in global_raw_matches])
+    dtw_mid_all = np.array([m[4] for m in global_raw_matches])
+    euc_mid_all = np.array([m[5] for m in global_raw_matches])
+    dtw_low_all = np.array([m[6] for m in global_raw_matches])
+    euc_low_all = np.array([m[7] for m in global_raw_matches])
 
-    # یافتن کمینه و بیشینه
     ranges = {}
     for name, arr in [("dtw_up", dtw_up_all), ("euc_up", euc_up_all),
                       ("dtw_mid", dtw_mid_all), ("euc_mid", euc_mid_all),
@@ -319,7 +311,6 @@ for crypto_symbol in crypto_symbols:
     for match in global_raw_matches:
         sym, dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low, start_date, w_up, w_mid, w_low = match
 
-        # نرمال‌سازی به [0,1]
         def norm(val, mn, rng):
             return (val - mn) / rng
 
@@ -330,13 +321,11 @@ for crypto_symbol in crypto_symbols:
         n_dtw_low = norm(dtw_low, *ranges["dtw_low"][:2], ranges["dtw_low"][2])
         n_euc_low = norm(euc_low, *ranges["euc_low"][:2], ranges["euc_low"][2])
 
-        # امتیاز نهایی: میانگین همهٔ ۶ مقدار
         final_score = (n_dtw_up + n_euc_up + n_dtw_mid + n_euc_mid + n_dtw_low + n_euc_low) / 6
 
         scored_matches.append((final_score, dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low,
                                sym, start_date, w_up, w_mid, w_low))
 
-    # انتخاب بهترین‌ها برای هر نماد (حداکثر ۲ مورد بدون همپوشانی)
     symbol_matches = defaultdict(list)
     for m in scored_matches:
         sym = m[7]
@@ -360,7 +349,6 @@ for crypto_symbol in crypto_symbols:
         selected_per_symbol.extend(selected)
 
     selected_per_symbol.sort(key=lambda x: x[0])
-
     filtered_matches = [m for m in selected_per_symbol if m[0] < 0.02]
 
     if not filtered_matches:
@@ -388,15 +376,12 @@ for crypto_symbol in crypto_symbols:
         )
         all_telegram_parts.append(msg)
 
-    # ================================
-    # رسم نمودارها
-    # ================================
+    # رسم نمودار
     n_matches = len(filtered_matches)
     total_plots = n_matches + 3
     fig, axes = plt.subplots(10, 5, figsize=(25, 50))
     axes = axes.flatten()
 
-    # جایگاه‌های الگو
     pattern_indices = [0, 24, 49]
     plot_data = [None] * 50
     for idx in pattern_indices:
