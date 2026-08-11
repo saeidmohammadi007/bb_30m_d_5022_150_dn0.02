@@ -130,6 +130,10 @@ def z_norm(seq):
         return seq - np.mean(seq)
     return (seq - np.mean(seq)) / std
 
+def norm(val, mn, rng):
+    """نرمال‌سازی در بازه [0,1] با کمینه و برد"""
+    return (val - mn) / rng if rng != 0 else 0.0
+
 # ═══════════════════════════════════════════════════════════
 # ۲. جمع‌آوری پیام‌ها
 # ═══════════════════════════════════════════════════════════
@@ -191,7 +195,7 @@ for crypto_symbol in crypto_symbols:
         print(f"  تعداد کندل‌های معتبر باند بولینگر ({len(bb_mid)}) کمتر از {n_candles} است. رد می‌شود.")
         continue
 
-    # استخراج الگو (سه خط)
+    # استخراج الگو
     pattern_upper = bb_upper.iloc[-n_candles:].values
     pattern_mid   = bb_mid.iloc[-n_candles:].values
     pattern_lower = bb_lower.iloc[-n_candles:].values
@@ -205,7 +209,7 @@ for crypto_symbol in crypto_symbols:
     print(f"الگوی {crypto_symbol} ({tf_input}) با {n_candles} کندل استخراج شد.")
     print(f"بازه الگو: {pattern_dates[0]} تا {pattern_dates[-1]}")
 
-    # تابع جستجو (با حذف NaN)
+    # تابع جستجو
     def search_raw_matches(symbol, interval="1d", window_fraction=0.5):
         df = yf.download(symbol, interval=interval, period="max")
         if df.empty:
@@ -220,7 +224,7 @@ for crypto_symbol in crypto_symbols:
             return None, []
 
         close = df['Close'].dropna()
-        if len(close) < bb_period + n_candles:   # حداقل داده برای محاسبه باند و n_candles
+        if len(close) < bb_period + n_candles:
             return None, []
 
         mid = close.rolling(bb_period).mean()
@@ -293,6 +297,7 @@ for crypto_symbol in crypto_symbols:
         print("هیچ تطابقی برای این الگو یافت نشد. به نماد بعدی می‌رویم.")
         continue
 
+    # جمع‌آوری همهٔ فاصله‌ها برای نرمال‌سازی
     dtw_up_all = np.array([m[2] for m in global_raw_matches])
     euc_up_all = np.array([m[3] for m in global_raw_matches])
     dtw_mid_all = np.array([m[4] for m in global_raw_matches])
@@ -305,27 +310,26 @@ for crypto_symbol in crypto_symbols:
                       ("dtw_mid", dtw_mid_all), ("euc_mid", euc_mid_all),
                       ("dtw_low", dtw_low_all), ("euc_low", euc_low_all)]:
         mn, mx = arr.min(), arr.max()
-        ranges[name] = (mn, mx, mx - mn if mx != mn else 1)
+        rng = mx - mn if mx != mn else 1.0
+        ranges[name] = (mn, rng)   # فقط کمینه و برد ذخیره شود
 
     scored_matches = []
     for match in global_raw_matches:
         sym, dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low, start_date, w_up, w_mid, w_low = match
 
-        def norm(val, mn, rng):
-            return (val - mn) / rng
-
-        n_dtw_up = norm(dtw_up, *ranges["dtw_up"][:2], ranges["dtw_up"][2])
-        n_euc_up = norm(euc_up, *ranges["euc_up"][:2], ranges["euc_up"][2])
-        n_dtw_mid = norm(dtw_mid, *ranges["dtw_mid"][:2], ranges["dtw_mid"][2])
-        n_euc_mid = norm(euc_mid, *ranges["euc_mid"][:2], ranges["euc_mid"][2])
-        n_dtw_low = norm(dtw_low, *ranges["dtw_low"][:2], ranges["dtw_low"][2])
-        n_euc_low = norm(euc_low, *ranges["euc_low"][:2], ranges["euc_low"][2])
+        n_dtw_up = norm(dtw_up, ranges["dtw_up"][0], ranges["dtw_up"][1])
+        n_euc_up = norm(euc_up, ranges["euc_up"][0], ranges["euc_up"][1])
+        n_dtw_mid = norm(dtw_mid, ranges["dtw_mid"][0], ranges["dtw_mid"][1])
+        n_euc_mid = norm(euc_mid, ranges["euc_mid"][0], ranges["euc_mid"][1])
+        n_dtw_low = norm(dtw_low, ranges["dtw_low"][0], ranges["dtw_low"][1])
+        n_euc_low = norm(euc_low, ranges["euc_low"][0], ranges["euc_low"][1])
 
         final_score = (n_dtw_up + n_euc_up + n_dtw_mid + n_euc_mid + n_dtw_low + n_euc_low) / 6
 
         scored_matches.append((final_score, dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low,
                                sym, start_date, w_up, w_mid, w_low))
 
+    # انتخاب بهترین‌ها (حداکثر ۲ مورد غیرهمپوشان از هر نماد)
     symbol_matches = defaultdict(list)
     for m in scored_matches:
         sym = m[7]
@@ -378,7 +382,6 @@ for crypto_symbol in crypto_symbols:
 
     # رسم نمودار
     n_matches = len(filtered_matches)
-    total_plots = n_matches + 3
     fig, axes = plt.subplots(10, 5, figsize=(25, 50))
     axes = axes.flatten()
 
