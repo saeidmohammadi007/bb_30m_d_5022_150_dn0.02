@@ -90,9 +90,6 @@ symbol_colors = {
     "SAND-USD": "#f39c12", "AR-USD": "#2ecc71"
 }
 
-# ═══════════════════════════════════════════════════════════
-# ۱. توابع کمکی
-# ═══════════════════════════════════════════════════════════
 def fetch_lbank_data(yahoo_symbol, tf):
     print(f"Yahoo داده‌ای برای {yahoo_symbol} ندارد. دریافت از LBank...")
     base = yahoo_symbol.upper().replace("-USD", "").replace("/USD", "")
@@ -131,17 +128,10 @@ def z_norm(seq):
     return (seq - np.mean(seq)) / std
 
 def norm(val, mn, rng):
-    """نرمال‌سازی در بازه [0,1] با کمینه و برد"""
     return (val - mn) / rng if rng != 0 else 0.0
 
-# ═══════════════════════════════════════════════════════════
-# ۲. جمع‌آوری پیام‌ها
-# ═══════════════════════════════════════════════════════════
 all_telegram_parts = []
 
-# ═══════════════════════════════════════════════════════════
-# ۳. حلقه اصلی برای هر نماد الگو
-# ═══════════════════════════════════════════════════════════
 for crypto_symbol in crypto_symbols:
     print(f"\n{'='*80}")
     print(f"شروع تحلیل برای نماد الگو: {crypto_symbol}")
@@ -178,7 +168,6 @@ for crypto_symbol in crypto_symbols:
     if resample_rule:
         close_series = close_series.resample(resample_rule).last().dropna()
 
-    # محاسبه باند بولینگر و حذف NaNهای اولیه
     bb_period = 20
     bb_std = 2
     bb_mid = close_series.rolling(bb_period).mean()
@@ -186,7 +175,6 @@ for crypto_symbol in crypto_symbols:
     bb_upper = bb_mid + bb_std * bb_std_val
     bb_lower = bb_mid - bb_std * bb_std_val
 
-    # حذف NaN و هم‌تراز کردن
     bb_mid = bb_mid.dropna()
     bb_upper = bb_upper.reindex(bb_mid.index)
     bb_lower = bb_lower.reindex(bb_mid.index)
@@ -195,11 +183,11 @@ for crypto_symbol in crypto_symbols:
         print(f"  تعداد کندل‌های معتبر باند بولینگر ({len(bb_mid)}) کمتر از {n_candles} است. رد می‌شود.")
         continue
 
-    # استخراج الگو
     pattern_upper = bb_upper.iloc[-n_candles:].values
     pattern_mid   = bb_mid.iloc[-n_candles:].values
     pattern_lower = bb_lower.iloc[-n_candles:].values
     pattern_dates = bb_upper.index[-n_candles:]
+    # حذف منطقهٔ زمانی برای مقایسهٔ ایمن با تاریخ‌های جستجو
     pattern_start_date = pattern_dates[0].normalize().tz_localize(None)
 
     pattern_norm_upper = z_norm(pattern_upper)
@@ -209,7 +197,6 @@ for crypto_symbol in crypto_symbols:
     print(f"الگوی {crypto_symbol} ({tf_input}) با {n_candles} کندل استخراج شد.")
     print(f"بازه الگو: {pattern_dates[0]} تا {pattern_dates[-1]}")
 
-    # تابع جستجو
     def search_raw_matches(symbol, interval="1d", window_fraction=0.5):
         df = yf.download(symbol, interval=interval, period="max")
         if df.empty:
@@ -249,7 +236,9 @@ for crypto_symbol in crypto_symbols:
 
         for i in range(N - n_candles + 1):
             window_end_date = mid.index[i + n_candles - 1]
-            if window_end_date >= pattern_start_date:
+            # حذف منطقهٔ زمانی برای مقایسه
+            window_end_date_naive = window_end_date.normalize().tz_localize(None)
+            if window_end_date_naive >= pattern_start_date:
                 continue
 
             win_upper = upper_vals[i:i + n_candles]
@@ -291,19 +280,20 @@ for crypto_symbol in crypto_symbols:
         all_mid_series[sym] = mid_series
         if raw_list:
             for item in raw_list:
+                # item: (dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low, start_date, w_up, w_mid, w_low)
                 global_raw_matches.append((sym,) + item)
 
     if not global_raw_matches:
         print("هیچ تطابقی برای این الگو یافت نشد. به نماد بعدی می‌رویم.")
         continue
 
-    # جمع‌آوری همهٔ فاصله‌ها برای نرمال‌سازی
-    dtw_up_all = np.array([m[2] for m in global_raw_matches])
-    euc_up_all = np.array([m[3] for m in global_raw_matches])
-    dtw_mid_all = np.array([m[4] for m in global_raw_matches])
-    euc_mid_all = np.array([m[5] for m in global_raw_matches])
-    dtw_low_all = np.array([m[6] for m in global_raw_matches])
-    euc_low_all = np.array([m[7] for m in global_raw_matches])
+    # اصلاح ایندکس‌ها: m[1]=dtw_up, m[2]=euc_up, m[3]=dtw_mid, ...
+    dtw_up_all  = np.array([m[1] for m in global_raw_matches])
+    euc_up_all  = np.array([m[2] for m in global_raw_matches])
+    dtw_mid_all = np.array([m[3] for m in global_raw_matches])
+    euc_mid_all = np.array([m[4] for m in global_raw_matches])
+    dtw_low_all = np.array([m[5] for m in global_raw_matches])
+    euc_low_all = np.array([m[6] for m in global_raw_matches])
 
     ranges = {}
     for name, arr in [("dtw_up", dtw_up_all), ("euc_up", euc_up_all),
@@ -311,7 +301,7 @@ for crypto_symbol in crypto_symbols:
                       ("dtw_low", dtw_low_all), ("euc_low", euc_low_all)]:
         mn, mx = arr.min(), arr.max()
         rng = mx - mn if mx != mn else 1.0
-        ranges[name] = (mn, rng)   # فقط کمینه و برد ذخیره شود
+        ranges[name] = (mn, rng)
 
     scored_matches = []
     for match in global_raw_matches:
@@ -329,7 +319,6 @@ for crypto_symbol in crypto_symbols:
         scored_matches.append((final_score, dtw_up, euc_up, dtw_mid, euc_mid, dtw_low, euc_low,
                                sym, start_date, w_up, w_mid, w_low))
 
-    # انتخاب بهترین‌ها (حداکثر ۲ مورد غیرهمپوشان از هر نماد)
     symbol_matches = defaultdict(list)
     for m in scored_matches:
         sym = m[7]
@@ -380,7 +369,6 @@ for crypto_symbol in crypto_symbols:
         )
         all_telegram_parts.append(msg)
 
-    # رسم نمودار
     n_matches = len(filtered_matches)
     fig, axes = plt.subplots(10, 5, figsize=(25, 50))
     axes = axes.flatten()
@@ -409,12 +397,9 @@ for crypto_symbol in crypto_symbols:
             ax.plot(pattern_dates, pattern_mid, label='Mid', color='blue')
             ax.plot(pattern_dates, pattern_lower, label='Lower', color='green', alpha=0.7)
             title = f'Pattern: {crypto_symbol} ({tf_input})'
-            if i == 0:
-                title += ' (start)'
-            elif i == 49:
-                title += ' (end)'
-            else:
-                title += ' (middle)'
+            if i == 0: title += ' (start)'
+            elif i == 49: title += ' (end)'
+            else: title += ' (middle)'
             ax.set_title(title, fontsize=9)
             ax.legend(fontsize=7)
             ax.grid(True)
@@ -437,8 +422,7 @@ for crypto_symbol in crypto_symbols:
             ax.plot(date_range, w_mid, color=color, linewidth=lw, label='Mid')
             ax.plot(date_range, w_low, color=color, linewidth=lw, linestyle=':', label='Lower')
             title = f'{sym} #{global_idx+1}'
-            if is_best:
-                title += ' ⭐'
+            if is_best: title += ' ⭐'
             title += f'\nScore:{score:.3f} | {start_date.strftime("%Y-%m-%d")}'
             ax.set_title(title, fontsize=8)
             ax.legend(fontsize=6)
