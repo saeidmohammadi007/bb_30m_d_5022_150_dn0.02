@@ -14,7 +14,7 @@ import requests
 # ۰. تنظیمات ثابت
 # ═══════════════════════════════════════════════════════════
 n_candles = 150
-tf_input = "4h"          # <--- تغییر از "30m" به "4h"
+tf_input = "30m"
 search_interval = "1d"
 
 # تنظیمات تلگرام
@@ -126,8 +126,6 @@ def z_norm(seq):
     if std == 0:
         return seq - np.mean(seq)
     return (seq - np.mean(seq)) / std
-
-# تابع norm دیگر استفاده نمی‌شود (حذف شد)
 
 all_telegram_parts = []
 
@@ -252,10 +250,13 @@ for crypto_symbol in crypto_symbols:
                           window_type='sakoechiba',
                           window_args={'window_size': window_size}).distance
 
-            # ذخیره فقط مقادیر DTW
-            raw_matches.append((dtw_up, dtw_low,
-                                mid.index[i], win_upper, win_lower))
+            # محاسبه فاصله اقلیدسی (RMSE) برای هر باند
+            euclidean_up = np.sqrt(np.mean((pattern_norm_upper - win_upper_norm) ** 2))
+            euclidean_low = np.sqrt(np.mean((pattern_norm_lower - win_lower_norm) ** 2))
 
+            # ذخیره DTW و فاصله اقلیدسی
+            raw_matches.append((dtw_up, dtw_low, euclidean_up, euclidean_low,
+                                mid.index[i], win_upper, win_lower))
         return mid, raw_matches
 
     all_mid_series = {}
@@ -273,24 +274,31 @@ for crypto_symbol in crypto_symbols:
         continue
 
     # ═══════════════════════════════════════════════════════════
-    # امتیازدهی بدون Min-Max سراسری؛ نرمال‌سازی بر اساس طول پنجره
+    # امتیازدهی ترکیبی: DTW + Euclidean
     # ═══════════════════════════════════════════════════════════
     scored_matches = []
     for match in global_raw_matches:
-        sym, dtw_up, dtw_low, start_date, w_up, w_low = match
+        sym, dtw_up, dtw_low, eucl_up, eucl_low, start_date, w_up, w_low = match
 
-        # متوسط فاصله به ازای هر نقطه
+        # نرمال‌سازی DTW به ازای هر نقطه
         dtw_up_norm = dtw_up / n_candles
         dtw_low_norm = dtw_low / n_candles
+        dtw_score = (dtw_up_norm + dtw_low_norm) / 2
 
-        final_score = (dtw_up_norm + dtw_low_norm) / 2
+        # میانگین فاصله اقلیدسی (RMSE) دو باند
+        eucl_score = (eucl_up + eucl_low) / 2
 
-        scored_matches.append((final_score, dtw_up, dtw_low,
+        # ترکیب با وزن برابر (قابل تنظیم)
+        W_DTW = 0.5
+        W_EUCL = 0.5
+        final_score = W_DTW * dtw_score + W_EUCL * eucl_score
+
+        scored_matches.append((final_score, dtw_up, dtw_low, eucl_up, eucl_low,
                                sym, start_date, w_up, w_low))
 
     symbol_matches = defaultdict(list)
     for m in scored_matches:
-        sym = m[3]
+        sym = m[5]  # ایندکس نماد در تاپل جدید
         symbol_matches[sym].append(m)
 
     selected_per_symbol = []
@@ -298,10 +306,10 @@ for crypto_symbol in crypto_symbols:
         matches.sort(key=lambda x: x[0])
         selected = []
         for match in matches:
-            start = match[4]
+            start = match[6]  # ایندکس تاریخ شروع
             overlap = False
             for sel in selected:
-                if abs((start - sel[4]).days) < n_candles:
+                if abs((start - sel[6]).days) < n_candles:
                     overlap = True
                     break
             if not overlap:
@@ -312,8 +320,8 @@ for crypto_symbol in crypto_symbols:
 
     selected_per_symbol.sort(key=lambda x: x[0])
 
-    # آستانه قابل تنظیم: متوسط فاصله به ازای هر نقطه کمتر از این مقدار
-    SCORE_THRESHOLD = 0.08  # <-- تغییر از 0.1 به 0.08
+    # آستانه قابل تنظیم: میانگین فاصله ترکیبی کمتر از این مقدار
+    SCORE_THRESHOLD = 0.08  # ممکن است نیاز به تنظیم باشد
     filtered_matches = [m for m in selected_per_symbol if m[0] < SCORE_THRESHOLD]
 
     if not filtered_matches:
@@ -322,19 +330,24 @@ for crypto_symbol in crypto_symbols:
 
     print(f"\nنتایج با امتیاز < {SCORE_THRESHOLD} برای الگوی {crypto_symbol}:")
     print("─" * 80)
-    for idx, (score, dtw_up, dtw_low, sym, start_date, _, _) in enumerate(filtered_matches):
+    for idx, match in enumerate(filtered_matches):
+        score, dtw_up, dtw_low, eucl_up, eucl_low, sym, start_date, _, _ = match
         star = "⭐" if idx == 0 else "  "
         dtw_up_norm = dtw_up / n_candles
         dtw_low_norm = dtw_low / n_candles
+        eucl_score = (eucl_up + eucl_low) / 2
         print(f"{star} رتبه {idx+1}: {sym} | امتیاز: {score:.3f} | "
-              f"DTW_UP_norm:{dtw_up_norm:.3f} | DTW_LOW_norm:{dtw_low_norm:.3f} | شروع: {start_date.strftime('%Y-%m-%d')}")
+              f"DTW_UP_norm:{dtw_up_norm:.3f} | DTW_LOW_norm:{dtw_low_norm:.3f} | "
+              f"Eucl_UP:{eucl_up:.3f} | Eucl_LOW:{eucl_low:.3f} | Eucl_Score:{eucl_score:.3f} | "
+              f"شروع: {start_date.strftime('%Y-%m-%d')}")
 
         msg = (
             f"📊 <b>الگو:</b> {tf_input} {crypto_symbol}\n"
             f"🪙 <b>نماد:</b> {sym}\n"
             f"📅 <b>تاریخ شروع:</b> {start_date.strftime('%Y-%m-%d')}\n"
             f"⭐ <b>امتیاز:</b> {score:.3f}\n"
-            f"<i>DTW_UP_norm:</i> {dtw_up_norm:.3f} | <i>DTW_LOW_norm:</i> {dtw_low_norm:.3f}"
+            f"<i>DTW_UP_norm:</i> {dtw_up_norm:.3f} | <i>DTW_LOW_norm:</i> {dtw_low_norm:.3f}\n"
+            f"<i>Eucl_UP:</i> {eucl_up:.3f} | <i>Eucl_LOW:</i> {eucl_low:.3f} | <i>Eucl_Score:</i> {eucl_score:.3f}"
         )
         all_telegram_parts.append(msg)
 
@@ -373,7 +386,7 @@ for crypto_symbol in crypto_symbols:
             ax.grid(True)
         else:
             global_idx = data
-            (score, dtw_up, dtw_low, sym, start_date, w_up, w_low) = filtered_matches[global_idx]
+            (score, dtw_up, dtw_low, eucl_up, eucl_low, sym, start_date, w_up, w_low) = filtered_matches[global_idx]
 
             color = symbol_colors.get(sym, 'gray')
             is_best = (global_idx == 0)
