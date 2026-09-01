@@ -13,7 +13,7 @@ import requests
 # ═══════════════════════════════════════════════════════════
 # ۰. تنظیمات ثابت
 # ═══════════════════════════════════════════════════════════
-n_candles = 60          # تعداد کندل‌های الگو
+n_candles = 120          # تعداد کندل‌های الگو  ← تغییر یافته از 60 به 120
 tf_input = "30m"
 search_interval = "1d"
 macd_fast = 12          # دورهٔ میانگین سریع برای MACD
@@ -308,7 +308,8 @@ for crypto_symbol in crypto_symbols:
     fig, axes = plt.subplots(10, 5, figsize=(25, 50))
     axes = axes.flatten()
 
-    pattern_indices = [0, 24, 49]
+    # برای نمایش الگو در سه نقطه (آغاز، میانه، پایان) از میان ۵۰ زیرنمودار
+    pattern_indices = [0, 24, 49]   # موقعیت‌های ثابت در لیست ۵۰ تایی
     plot_data = [None] * 50
     for idx in pattern_indices:
         plot_data[idx] = ("pattern", None)
