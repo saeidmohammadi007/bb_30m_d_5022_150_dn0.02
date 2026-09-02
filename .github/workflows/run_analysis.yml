@@ -1,24 +1,28 @@
-name: Run Pattern Check
+name: LBank Pattern Scanner
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'   # اجرا هر روز ساعت 00:00 UTC
+  workflow_dispatch:      # امکان اجرای دستی از تب Actions
 
 jobs:
-  run:
+  scan:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.10'
 
-      - name: Install libraries
+      - name: Install dependencies
         run: |
-          pip install yfinance matplotlib dtw-python ccxt requests pandas numpy
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run script
+      - name: Run scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
