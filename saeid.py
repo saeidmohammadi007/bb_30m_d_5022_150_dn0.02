@@ -8,7 +8,10 @@ import requests
 import ccxt
 
 FAST, SLOW = 12, 26
-PATTERN_START, PATTERN_END = '2015-02-02', '2016-08-08'
+# --- تغییرات: نماد، تاریخ و تایم‌فریم الگوی مرجع (روزانه) ---
+PATTERN_SYMBOL = 'AVAX-USD'
+PATTERN_START = '2023-09-25'
+PATTERN_END = '2023-11-28'
 SHOW_N = 10
 
 # ---------- توابع ----------
@@ -38,8 +41,9 @@ def get_lbank_futures_symbols():
     print(f"✅ تعداد ارزهای پایه‌ی منحصربه‌فرد فیوچرز LBank: {len(unique_bases)}")
     return unique_bases
 
-def get_weekly_data(ticker):
-    df = yf.download(ticker, start='2015-01-01', interval='1wk', progress=False, auto_adjust=False)
+def get_daily_data(ticker):
+    """دریافت داده‌های روزانه از ابتدای ۲۰۲۳ برای محاسبه MACD الگو"""
+    df = yf.download(ticker, start='2023-01-01', interval='1d', progress=False, auto_adjust=False)
     if df.empty:
         return None
     df = df[['Open', 'High', 'Low', 'Close']].copy()
@@ -47,9 +51,8 @@ def get_weekly_data(ticker):
     df.columns = ['open', 'high', 'low', 'close']
     return df
 
-def get_4h_data(ticker):
-    # تغییر از 30m به 4h
-    df = yf.download(ticker, period='120d', interval='4h', progress=False, auto_adjust=False)
+def get_30m_data(ticker):
+    df = yf.download(ticker, period='60d', interval='30m', progress=False, auto_adjust=False)
     if df.empty:
         return None
     df = df[['Open', 'High', 'Low', 'Close']].copy()
@@ -99,17 +102,20 @@ def send_telegram_message(text):
         print(f"❌ خطا در ارسال به تلگرام: {e}")
 
 # ---------- اجرای اصلی ----------
-print("🔍 استخراج الگوی هفتگی بیت‌کوین ...")
-btc_w = get_weekly_data('BTC-USD')
-if btc_w is None:
-    print("❌ خطا در دریافت داده‌های بیت‌کوین")
+print(f"🔍 استخراج الگوی روزانه {PATTERN_SYMBOL} ...")
+ref_daily = get_daily_data(PATTERN_SYMBOL)
+if ref_daily is None:
+    print(f"❌ خطا در دریافت داده‌های {PATTERN_SYMBOL}")
     exit()
 
-btc_macd = macd_line(btc_w['close']).dropna()
-mask = (btc_macd.index >= PATTERN_START) & (btc_macd.index <= PATTERN_END)
-pattern = btc_macd[mask].values
+ref_macd = macd_line(ref_daily['close']).dropna()
+mask = (ref_macd.index >= PATTERN_START) & (ref_macd.index <= PATTERN_END)
+pattern = ref_macd[mask].values
 L = len(pattern)
-print(f"✅ الگوی مرجع (هفتگی) با {L} کندل")
+print(f"✅ الگوی مرجع (روزانه) با {L} کندل")
+
+if L < 3:
+    print("⚠️ طول الگو بسیار کوتاه است؛ نتایج ممکن است قابل اعتماد نباشند.")
 
 pattern_mean = np.mean(pattern)
 pattern_std = np.std(pattern) + 1e-9
@@ -126,14 +132,13 @@ if len(top_symbols) == 0:
     exit()
 
 results = []
-# تغییر نام متغیر حلقه و تابع دریافت داده به 4h
-for sym in tqdm(top_symbols, desc="اسکن ۴ ساعته"):
+for sym in tqdm(top_symbols, desc="اسکن ۳۰ دقیقه‌ای"):
     try:
-        df_4h = get_4h_data(f"{sym}-USD")
-        if df_4h is None or len(df_4h) < L + 30:
+        df_30m = get_30m_data(f"{sym}-USD")
+        if df_30m is None or len(df_30m) < L + 30:
             continue
 
-        macd = macd_line(df_4h['close']).dropna()
+        macd = macd_line(df_30m['close']).dropna()
         if len(macd) < L:
             continue
 
@@ -148,7 +153,7 @@ for sym in tqdm(top_symbols, desc="اسکن ۴ ساعته"):
         results.append({
             'symbol': sym,
             'dist_dtw': dist_dtw,
-            'last_4h': last_time
+            'last_30m': last_time
         })
         time.sleep(0.3)
     except Exception:
@@ -162,12 +167,12 @@ if results:
 
     # ساخت پیام متنی برای تلگرام
     message_lines = []
-    message_lines.append("🏆 <b>برترین ارزهای مشابه الگوی BTC (فقط DTW)</b>\n")
-    message_lines.append("(MACD ۴ ساعته در برابر الگوی هفتگی 2015-2016 با محدودیت Sakoe-Chiba)\n")
+    message_lines.append(f"🏆 <b>برترین ارزهای مشابه الگوی {PATTERN_SYMBOL} (فقط DTW)</b>\n")
+    message_lines.append(f"(MACD ۳۰ دقیقه‌ای در برابر الگوی روزانه {PATTERN_START} تا {PATTERN_END} با محدودیت Sakoe-Chiba)\n")
     for idx, row in df_top.iterrows():
         line = (
             f"🔸 <b>{row['symbol']}</b>\n"
-            f"   DTW: {row['dist_dtw']:.4f} | بروزرسانی: {row['last_4h']}\n"
+            f"   DTW: {row['dist_dtw']:.4f} | بروزرسانی: {row['last_30m']}\n"
         )
         message_lines.append(line)
     message_lines.append(f"\n📅 تعداد کل ارزهای اسکن‌شده: {len(top_symbols)}")
